@@ -1,0 +1,1114 @@
+﻿import { useEffect, useState, type FormEvent } from "react";
+import type {
+  AuthSession,
+  CatalogOverview,
+  ConversationDetail,
+  ConversationSummary,
+  CreateLeadRequest,
+  CreateQuoteRequest,
+  CreatePaymentLinkResponse,
+  CrmOverview,
+  LeadSummary,
+  LoginRequest,
+  OrderDetail,
+  OrderSummary,
+  OrdersOverview,
+  PricePreviewRequest,
+  PricePreviewResult,
+  QuoteDetail,
+  QuoteSummary,
+  UpdateOrderStatusRequest,
+} from "@print-flow/contracts";
+import { CatalogPanel } from "./components/CatalogPanel";
+import { OrdersPanel } from "./components/OrdersPanel";
+import "./styles.css";
+const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
+const STORAGE_KEY = "print-flow-saas.session";
+
+type AuthStorage = Pick<
+  AuthSession,
+  "accessToken" | "user" | "tenant" | "role" | "availableTenants" | "expiresAt"
+>;
+
+type ApiEnvelope = {
+  message: string;
+  code: string;
+  statusCode: number;
+};
+
+type SessionPayload = {
+  overview: CrmOverview;
+  leads: LeadSummary[];
+  conversations: ConversationSummary[];
+  conversationDetail: ConversationDetail | null;
+  catalog: CatalogOverview;
+};
+
+type OrdersPayload = {
+  overview: OrdersOverview;
+  quotes: QuoteSummary[];
+  orders: OrderSummary[];
+  quoteDetail: QuoteDetail | null;
+  orderDetail: OrderDetail | null;
+};
+const sampleAccounts = [
+  {
+    email: "admin@printflow.local",
+    password: "printflow123",
+    tenantSlug: "alfa-print",
+    note: "Acesso owner em Alfa Print e Manager em Nova Graph.",
+  },
+  {
+    email: "sales@printflow.local",
+    password: "printflow123",
+    tenantSlug: "nova-graph",
+    note: "Acesso operacional em ambos os tenants.",
+  },
+] as const;
+
+const sourceLabels = {
+  whatsapp: "WhatsApp",
+  manual: "Manual",
+  web: "Web",
+} as const;
+
+const stageLabels = {
+  new: "Novo",
+  contacted: "Contato feito",
+  qualified: "Qualificado",
+  won: "Ganho",
+  lost: "Perdido",
+} as const;
+
+const conversationStatusLabels = {
+  open: "Aberta",
+  waiting_customer: "Aguardando cliente",
+  closed: "Encerrada",
+} as const;
+
+const authorLabels = {
+  customer: "Cliente",
+  operator: "Operador",
+  system: "Sistema",
+  bot: "Bot",
+} as const;
+
+async function apiRequest<T>(path: string, init: RequestInit = {}, token?: string) {
+  const headers = new Headers(init.headers);
+
+  if (!headers.has("Content-Type") && init.body) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...init,
+    headers,
+  });
+
+  const payload = (await response.json().catch(() => null)) as T | ApiEnvelope | null;
+
+  if (!response.ok) {
+    const errorMessage = payload && typeof payload === "object" && "message" in payload
+      ? payload.message
+      : "Nao foi possivel concluir a operacao";
+    throw new Error(errorMessage);
+  }
+
+  return payload as T;
+}
+
+function readStoredSession() {
+  const raw = window.localStorage.getItem(STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw) as AuthStorage;
+  } catch {
+    return null;
+  }
+}
+
+function formatDateTime(dateTime: string) {
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(dateTime));
+}
+
+function formatRelative(dateTime?: string) {
+  if (!dateTime) {
+    return "Sem atividade recente";
+  }
+
+  const minutes = Math.max(1, Math.round((Date.now() - new Date(dateTime).getTime()) / 60000));
+
+  if (minutes < 60) {
+    return `Ha ${minutes} min`;
+  }
+
+  const hours = Math.round(minutes / 60);
+  return `Ha ${hours} h`;
+}
+
+function cloneSession(response: AuthSession): AuthStorage {
+  return {
+    accessToken: response.accessToken,
+    user: response.user,
+    tenant: response.tenant,
+    role: response.role,
+    availableTenants: response.availableTenants,
+    expiresAt: response.expiresAt,
+  };
+}
+
+function App() {
+  const [session, setSession] = useState<AuthStorage | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [email, setEmail] = useState("admin@printflow.local");
+  const [password, setPassword] = useState("printflow123");
+  const [tenantSlug, setTenantSlug] = useState("alfa-print");
+  const [nextTenantSlug, setNextTenantSlug] = useState("nova-graph");
+  const [crm, setCrm] = useState<SessionPayload | null>(null);
+  const [orders, setOrders] = useState<OrdersPayload | null>(null);
+  const [catalogPreview, setCatalogPreview] = useState<PricePreviewResult | null>(null);
+  const [catalogBusy, setCatalogBusy] = useState(false);
+  const [selectedConversationId, setSelectedConversationId] = useState("");
+  const [selectedQuoteId, setSelectedQuoteId] = useState("");
+  const [, setSelectedOrderId] = useState("");
+  const [draftItems, setDraftItems] = useState<PricePreviewResult[]>([]);
+  const [conversationBody, setConversationBody] = useState("");
+  const [leadName, setLeadName] = useState("");
+  const [leadSource, setLeadSource] = useState<CreateLeadRequest["source"]>("whatsapp");
+  const [leadPhone, setLeadPhone] = useState("");
+  const [leadEmail, setLeadEmail] = useState("");
+  const [leadNotes, setLeadNotes] = useState("");
+
+  const loadCrm = async (token: string, conversationId?: string) => {
+    const [overview, leadsResponse, conversationsResponse, catalog] = await Promise.all([
+      apiRequest<CrmOverview>("/api/v1/crm/overview", {}, token),
+      apiRequest<{ items: LeadSummary[] }>("/api/v1/crm/leads", {}, token),
+      apiRequest<{ items: ConversationSummary[] }>("/api/v1/crm/conversations", {}, token),
+      apiRequest<CatalogOverview>("/api/v1/catalog/overview", {}, token),
+    ]);
+
+    const targetConversationId = conversationId ?? conversationsResponse.items[0]?.id ?? "";
+    const conversationDetail = targetConversationId
+      ? await apiRequest<ConversationDetail>(`/api/v1/crm/conversations/${targetConversationId}`, {}, token)
+      : null;
+
+    setCrm({
+      overview,
+      leads: leadsResponse.items,
+      conversations: conversationsResponse.items,
+      conversationDetail,
+      catalog,
+    });
+    setCatalogPreview(null);
+    setSelectedConversationId(conversationDetail?.id ?? targetConversationId);
+    setConversationBody("");
+  };
+
+  const loadOrders = async (token: string, quoteId?: string, orderId?: string) => {
+    const [overview, quotesResponse, ordersResponse] = await Promise.all([
+      apiRequest<OrdersOverview>("/api/v1/orders/overview", {}, token),
+      apiRequest<{ items: QuoteSummary[] }>("/api/v1/orders/quotes", {}, token),
+      apiRequest<{ items: OrderSummary[] }>("/api/v1/orders/orders", {}, token),
+    ]);
+
+    const targetQuoteId = quoteId ?? quotesResponse.items[0]?.id ?? "";
+    const targetOrderId = orderId ?? ordersResponse.items[0]?.id ?? "";
+
+    const [quoteDetail, orderDetail] = await Promise.all([
+      targetQuoteId ? apiRequest<QuoteDetail>(`/api/v1/orders/quotes/${targetQuoteId}`, {}, token) : Promise.resolve(null),
+      targetOrderId ? apiRequest<OrderDetail>(`/api/v1/orders/orders/${targetOrderId}`, {}, token) : Promise.resolve(null),
+    ]);
+
+    setOrders({
+      overview,
+      quotes: quotesResponse.items,
+      orders: ordersResponse.items,
+      quoteDetail,
+      orderDetail,
+    });
+    setSelectedQuoteId(quoteDetail?.id ?? targetQuoteId);
+    setSelectedOrderId(orderDetail?.id ?? targetOrderId);
+  };
+
+  useEffect(() => {
+    const bootstrap = async () => {
+      const cached = readStoredSession();
+      if (!cached) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const current = await apiRequest<AuthSession>("/api/v1/auth/me", {}, cached.accessToken);
+        const nextSession = cloneSession(current);
+        setSession(nextSession);
+        setSelectedConversationId("");
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextSession));
+        await loadCrm(nextSession.accessToken);
+      } catch {
+        window.localStorage.removeItem(STORAGE_KEY);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    void bootstrap();
+  }, []);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    const candidate = session.availableTenants.find((tenant) => tenant.slug !== session.tenant.slug);
+    setNextTenantSlug(candidate?.slug ?? session.tenant.slug);
+  }, [session]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    void loadOrders(session.accessToken);
+  }, [session]);
+
+  const persistSession = (nextSession: AuthStorage) => {
+    setSession(nextSession);
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextSession));
+  };
+
+  const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSubmitting(true);
+    setError("");
+
+    try {
+      const payload: LoginRequest = {
+        email,
+        password,
+        tenantSlug: tenantSlug || undefined,
+      };
+
+      const response = await apiRequest<AuthSession>("/api/v1/auth/login", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+
+      const nextSession = cloneSession(response);
+      persistSession(nextSession);
+      setSelectedConversationId("");
+      setSelectedQuoteId("");
+      setSelectedOrderId("");
+      setDraftItems([]);
+      setOrders(null);
+      await loadCrm(nextSession.accessToken);
+    } catch (loginError) {
+      setError(loginError instanceof Error ? loginError.message : "Falha ao autenticar");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSwitchTenant = async () => {
+    if (!session) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError("");
+
+    try {
+      const response = await apiRequest<AuthSession>(
+        "/api/v1/auth/switch-tenant",
+        {
+          method: "POST",
+          body: JSON.stringify({ tenantSlug: nextTenantSlug }),
+        },
+        session.accessToken,
+      );
+
+      const nextSession = cloneSession(response);
+      persistSession(nextSession);
+      setSelectedConversationId("");
+      setSelectedQuoteId("");
+      setSelectedOrderId("");
+      setDraftItems([]);
+      setOrders(null);
+      await loadCrm(nextSession.accessToken);
+    } catch (switchError) {
+      setError(switchError instanceof Error ? switchError.message : "Falha ao trocar o tenant");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleLogout = () => {
+    window.localStorage.removeItem(STORAGE_KEY);
+    setSession(null);
+    setCrm(null);
+    setOrders(null);
+    setCatalogPreview(null);
+    setSelectedConversationId("");
+    setSelectedQuoteId("");
+    setSelectedOrderId("");
+    setDraftItems([]);
+    setError("");
+  };
+
+  const selectConversation = async (conversationId: string) => {
+    if (!session) {
+      return;
+    }
+
+    setSelectedConversationId(conversationId);
+    setError("");
+
+    try {
+      const detail = await apiRequest<ConversationDetail>(
+        `/api/v1/crm/conversations/${conversationId}`,
+        {},
+        session.accessToken,
+      );
+
+      setCrm((current) =>
+        current
+          ? {
+              ...current,
+              conversationDetail: detail,
+            }
+          : current,
+      );
+    } catch (conversationError) {
+      setError(conversationError instanceof Error ? conversationError.message : "Nao foi possivel abrir a conversa");
+    }
+  };
+
+  const handleCreateLead = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!session) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError("");
+
+    try {
+      const response = await apiRequest<{
+        lead: LeadSummary;
+        conversation: ConversationDetail;
+      }>(
+        "/api/v1/crm/leads",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            customerName: leadName,
+            source: leadSource,
+            phone: leadPhone || undefined,
+            email: leadEmail || undefined,
+            notes: leadNotes || undefined,
+          }),
+        },
+        session.accessToken,
+      );
+
+      setLeadName("");
+      setLeadPhone("");
+      setLeadEmail("");
+      setLeadNotes("");
+      setSelectedConversationId(response.conversation.id);
+      await loadCrm(session.accessToken, response.conversation.id);
+    } catch (leadError) {
+      setError(leadError instanceof Error ? leadError.message : "Nao foi possivel criar o lead");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSendMessage = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!session || !selectedConversationId) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError("");
+
+    try {
+      await apiRequest<ConversationDetail>(
+        `/api/v1/crm/conversations/${selectedConversationId}/messages`,
+        {
+          method: "POST",
+          body: JSON.stringify({ body: conversationBody, authorType: "operator" }),
+        },
+        session.accessToken,
+      );
+
+      await loadCrm(session.accessToken, selectedConversationId);
+    } catch (messageError) {
+      setError(messageError instanceof Error ? messageError.message : "Nao foi possivel enviar a mensagem");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handlePreviewCatalog = async (payload: PricePreviewRequest) => {
+    if (!session) {
+      return;
+    }
+
+    setCatalogBusy(true);
+    setError("");
+
+    try {
+      const preview = await apiRequest<PricePreviewResult>(
+        "/api/v1/catalog/preview",
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
+        session.accessToken,
+      );
+
+      setCatalogPreview(preview);
+    } catch (previewError) {
+      setError(previewError instanceof Error ? previewError.message : "Nao foi possivel calcular a precificacao");
+    } finally {
+      setCatalogBusy(false);
+    }
+  };
+
+  const handleAddDraftItem = (preview: PricePreviewResult) => {
+    setDraftItems((current) => [...current, preview]);
+  };
+
+  const handleRemoveDraftItem = (index: number) => {
+    setDraftItems((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  const handleClearDraft = () => {
+    setDraftItems([]);
+  };
+
+  const handleCreateQuote = async (notes: string) => {
+    if (!session) {
+      throw new Error("Sessao ausente");
+    }
+
+    const customerProfileId = crm?.conversationDetail?.customerProfile.id;
+    if (!customerProfileId) {
+      throw new Error("Selecione uma conversa com cliente para montar o orcamento");
+    }
+
+    if (!draftItems.length) {
+      throw new Error("Adicione ao menos um item ao orçamento");
+    }
+
+    setSubmitting(true);
+    setError("");
+
+    try {
+      const payload: CreateQuoteRequest = {
+        customerProfileId,
+        notes: notes || undefined,
+        items: draftItems.map((item) => ({
+          productId: item.productId,
+          variantId: item.variantId,
+          quantity: item.quantity,
+        })),
+      };
+
+      const quote = await apiRequest<QuoteDetail>(
+        "/api/v1/orders/quotes",
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
+        session.accessToken,
+      );
+
+      setSelectedQuoteId(quote.id);
+      setSelectedOrderId(quote.orderId ?? "");
+      await loadOrders(session.accessToken, quote.id, quote.orderId);
+    } catch (quoteError) {
+      setError(quoteError instanceof Error ? quoteError.message : "Nao foi possivel salvar o orçamento");
+      throw quoteError;
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const requestPaymentLink = async (orderId: string, quoteId?: string) => {
+    if (!session) {
+      throw new Error("Sessao ausente");
+    }
+
+    const response = await apiRequest<CreatePaymentLinkResponse>(
+      `/api/v1/billing/orders/${orderId}/payment-link`,
+      {
+        method: "POST",
+      },
+      session.accessToken,
+    );
+
+    setSelectedOrderId(response.order.id);
+    if (quoteId) {
+      setSelectedQuoteId(quoteId);
+    }
+    await loadOrders(session.accessToken, quoteId ?? selectedQuoteId, response.order.id);
+
+    return response;
+  };
+
+  const handleGeneratePaymentLink = async (orderId: string) => {
+    if (!session) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError("");
+
+    try {
+      await requestPaymentLink(orderId);
+    } catch (paymentError) {
+      setError(paymentError instanceof Error ? paymentError.message : "Nao foi possivel gerar o link de pagamento");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleApproveQuote = async (quoteId: string) => {
+    if (!session) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError("");
+
+    try {
+      const response = await apiRequest<{ quote: QuoteDetail; order: OrderDetail }>(
+        `/api/v1/orders/quotes/${quoteId}/approve`,
+        {
+          method: "POST",
+        },
+        session.accessToken,
+      );
+
+      setSelectedQuoteId(response.quote.id);
+      setSelectedOrderId(response.order.id);
+      await requestPaymentLink(response.order.id, response.quote.id);
+    } catch (approveError) {
+      setError(approveError instanceof Error ? approveError.message : "Nao foi possivel aprovar o orçamento");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSelectQuote = async (quoteId: string) => {
+    if (!session) {
+      return;
+    }
+
+    setSelectedQuoteId(quoteId);
+    try {
+      const quote = await apiRequest<QuoteDetail>(`/api/v1/orders/quotes/${quoteId}`, {}, session.accessToken);
+      setOrders((current) =>
+        current
+          ? {
+              ...current,
+              quoteDetail: quote,
+            }
+          : current,
+      );
+    } catch (selectError) {
+      setError(selectError instanceof Error ? selectError.message : "Nao foi possivel abrir o orçamento");
+    }
+  };
+
+  const handleSelectOrder = async (orderId: string) => {
+    if (!session) {
+      return;
+    }
+
+    setSelectedOrderId(orderId);
+    try {
+      const order = await apiRequest<OrderDetail>(`/api/v1/orders/orders/${orderId}`, {}, session.accessToken);
+      setOrders((current) =>
+        current
+          ? {
+              ...current,
+              orderDetail: order,
+            }
+          : current,
+      );
+    } catch (selectError) {
+      setError(selectError instanceof Error ? selectError.message : "Nao foi possivel abrir o pedido");
+    }
+  };
+
+  const handleUpdateOrderStatus = async (orderId: string, payload: UpdateOrderStatusRequest) => {
+    if (!session) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError("");
+
+    try {
+      const order = await apiRequest<OrderDetail>(
+        `/api/v1/orders/${orderId}/status`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        },
+        session.accessToken,
+      );
+
+      setSelectedOrderId(order.id);
+      await loadOrders(session.accessToken, selectedQuoteId, order.id);
+    } catch (updateError) {
+      setError(updateError instanceof Error ? updateError.message : "Nao foi possivel atualizar o pedido");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <main className="page page--loading">
+        <div className="loading-card">Carregando sessao do Print Flow...</div>
+      </main>
+    );
+  }
+
+  if (!session) {
+    return (
+      <main className="page">
+        <section className="login-layout">
+          <div className="hero-card hero-card--intro">
+            <p className="eyebrow">Print Flow SaaS</p>
+            <h1>CRM leve de atendimento com tenant e operacao comerciais</h1>
+            <p className="lead">
+              O fluxo ja nasce pronto para registrar lead, abrir conversa, manter
+              historico e continuar o atendimento sem perder contexto entre
+              tenants.
+            </p>
+
+            <div className="hero-stats">
+              <div>
+                <strong>2</strong>
+                <span>tenants demo</span>
+              </div>
+              <div>
+                <strong>3</strong>
+                <span>conversas seed</span>
+              </div>
+              <div>
+                <strong>MVP</strong>
+                <span>CRM leve e multi-tenant</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="hero-card auth-card">
+            <div className="card-header">
+              <div>
+                <p className="card-label">Acesso operacional</p>
+                <h2>Entrar no painel</h2>
+              </div>
+            </div>
+
+            <form className="auth-form" onSubmit={handleLogin}>
+              <label className="field">
+                <span>Email</span>
+                <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" />
+              </label>
+
+              <label className="field">
+                <span>Senha</span>
+                <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" />
+              </label>
+
+              <label className="field">
+                <span>Tenant</span>
+                <input
+                  value={tenantSlug}
+                  onChange={(event) => setTenantSlug(event.target.value)}
+                  placeholder="alfa-print ou nova-graph"
+                />
+              </label>
+
+              {error ? <p className="error-banner">{error}</p> : null}
+
+              <button className="button button--primary" type="submit" disabled={submitting}>
+                {submitting ? "Entrando..." : "Entrar"}
+              </button>
+            </form>
+
+            <div className="sample-grid">
+              {sampleAccounts.map((account) => (
+                <article key={account.email} className="sample-card">
+                  <span>{account.email}</span>
+                  <strong>{account.tenantSlug}</strong>
+                  <p>{account.note}</p>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  const overview = crm?.overview;
+  const leads = crm?.leads ?? [];
+  const conversations = crm?.conversations ?? [];
+  const conversationDetail = crm?.conversationDetail ?? null;
+  const catalog = crm?.catalog ?? null;
+  const ordersOverview = orders?.overview ?? null;
+  const quoteList = orders?.quotes ?? [];
+  const orderList = orders?.orders ?? [];
+  const quoteDetail = orders?.quoteDetail ?? null;
+  const orderDetail = orders?.orderDetail ?? null;
+
+  return (
+    <main className="page dashboard-shell">
+      <header className="topbar">
+        <div>
+          <p className="card-label">Sessao ativa</p>
+          <h1>{session.tenant.name}</h1>
+          <p className="lead">
+            {session.user.name} opera como {session.role.name} com {session.role.permissions.length} permissoes ativas.
+          </p>
+        </div>
+
+        <div className="topbar-actions">
+          <button className="button button--ghost" type="button" onClick={handleLogout}>
+            Sair
+          </button>
+        </div>
+      </header>
+
+      {error ? <p className="error-banner">{error}</p> : null}
+
+      <section className="stats-grid">
+        <article className="stat-card">
+          <span>Conversas abertas</span>
+          <strong>{overview?.openConversations ?? 0}</strong>
+          <p>{overview ? `${overview.waitingCustomerConversations} aguardando cliente` : "Carregando CRM"}</p>
+        </article>
+        <article className="stat-card">
+          <span>Leads qualificados</span>
+          <strong>{overview?.leadsByStage.qualified ?? 0}</strong>
+          <p>{overview?.leadsByStage.new ?? 0} leads novos no funil</p>
+        </article>
+        <article className="stat-card">
+          <span>Conversa destacada</span>
+          <strong>{conversationDetail?.customerName ?? "Selecione uma conversa"}</strong>
+          <p>{conversationDetail ? conversationStatusLabels[conversationDetail.status] : "Historico comercial pronto"}</p>
+        </article>
+        <article className="stat-card">
+          <span>Expira em</span>
+          <strong>{formatDateTime(session.expiresAt)}</strong>
+          <p>Token HMAC com validade de 12 horas</p>
+        </article>
+      </section>
+
+      <section className="content-grid">
+        <div className="panel panel--stacked">
+          <div className="section-head section-head--compact">
+            <div>
+              <p className="card-label">Contexto do tenant</p>
+              <h2>Troca de empresa e visao geral do funil</h2>
+            </div>
+          </div>
+
+          <div className="tenant-switcher">
+            <label className="field">
+              <span>Tenant atual</span>
+              <select value={session.tenant.slug} disabled>
+                <option value={session.tenant.slug}>{session.tenant.name}</option>
+              </select>
+            </label>
+
+            <label className="field">
+              <span>Trocar para</span>
+              <select value={nextTenantSlug} onChange={(event) => setNextTenantSlug(event.target.value)}>
+                {session.availableTenants.map((tenant) => (
+                  <option key={tenant.slug} value={tenant.slug}>
+                    {tenant.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <button className="button button--primary" type="button" onClick={handleSwitchTenant} disabled={submitting}>
+              {submitting ? "Trocando..." : "Trocar tenant"}
+            </button>
+          </div>
+
+          <div className="pill-grid pill-grid--wide">
+            {overview ? (
+              <>
+                <article className="tenant-pill">
+                  <strong>{overview.recentLeads.length}</strong>
+                  <span>Leads recentes</span>
+                </article>
+                <article className="tenant-pill">
+                  <strong>{overview.recentConversations.length}</strong>
+                  <span>Conversas recentes</span>
+                </article>
+                <article className="tenant-pill">
+                  <strong>{overview.closedConversations}</strong>
+                  <span>Conversas encerradas</span>
+                </article>
+                <article className="tenant-pill">
+                  <strong>{overview.waitingCustomerConversations}</strong>
+                  <span>Aguardando cliente</span>
+                </article>
+              </>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="panel panel--stacked">
+          <div className="section-head section-head--compact">
+            <div>
+              <p className="card-label">Novo lead</p>
+              <h2>Registrar atendimento</h2>
+            </div>
+          </div>
+
+          <form className="crm-form" onSubmit={handleCreateLead}>
+            <label className="field">
+              <span>Nome do cliente</span>
+              <input value={leadName} onChange={(event) => setLeadName(event.target.value)} placeholder="Maria Costa" />
+            </label>
+
+            <div className="two-column-grid">
+              <label className="field">
+                <span>Origem</span>
+                <select
+                  value={leadSource}
+                  onChange={(event) => setLeadSource(event.target.value as CreateLeadRequest["source"]) }
+                >
+                  <option value="whatsapp">WhatsApp</option>
+                  <option value="manual">Manual</option>
+                  <option value="web">Web</option>
+                </select>
+              </label>
+
+              <label className="field">
+                <span>Telefone</span>
+                <input
+                  value={leadPhone}
+                  onChange={(event) => setLeadPhone(event.target.value)}
+                  placeholder="+55 11 99999-0000"
+                />
+              </label>
+            </div>
+
+            <div className="two-column-grid">
+              <label className="field">
+                <span>Email</span>
+                <input
+                  value={leadEmail}
+                  onChange={(event) => setLeadEmail(event.target.value)}
+                  type="email"
+                  placeholder="cliente@empresa.com"
+                />
+              </label>
+
+              <label className="field">
+                <span>Observacao</span>
+                <input
+                  value={leadNotes}
+                  onChange={(event) => setLeadNotes(event.target.value)}
+                  placeholder="Cartao de visita com verniz localizado"
+                />
+              </label>
+            </div>
+
+            <button className="button button--primary" type="submit" disabled={submitting}>
+              {submitting ? "Salvando..." : "Criar lead e conversa"}
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <CatalogPanel
+        tenantName={session.tenant.name}
+        catalog={catalog}
+        preview={catalogPreview}
+        busy={catalogBusy}
+        draftCount={draftItems.length}
+        onPreview={handlePreviewCatalog}
+        onAddItem={handleAddDraftItem}
+      />
+
+      <OrdersPanel
+        tenantName={session.tenant.name}
+        customerName={conversationDetail?.customerName}
+        customerProfileId={conversationDetail?.customerProfile.id}
+        overview={ordersOverview}
+        quotes={quoteList}
+        orders={orderList}
+        quoteDetail={quoteDetail}
+        orderDetail={orderDetail}
+        draftItems={draftItems}
+        busy={submitting}
+        onRemoveDraftItem={handleRemoveDraftItem}
+        onClearDraft={handleClearDraft}
+        onCreateQuote={handleCreateQuote}
+        onApproveQuote={handleApproveQuote}
+        onSelectQuote={handleSelectQuote}
+        onSelectOrder={handleSelectOrder}
+        onGeneratePaymentLink={handleGeneratePaymentLink}
+        onUpdateOrderStatus={handleUpdateOrderStatus}
+      />
+
+      <section className="crm-grid">
+        <aside className="panel panel--stacked">
+          <div className="section-head section-head--compact">
+            <div>
+              <p className="card-label">Funil comercial</p>
+              <h2>Leads em atendimento</h2>
+            </div>
+          </div>
+
+          <div className="funnel-grid">
+            {Object.entries(stageLabels).map(([stage, label]) => {
+              const count = overview?.leadsByStage[stage as keyof typeof stageLabels] ?? 0;
+              return (
+                <article key={stage} className="funnel-card">
+                  <span>{label}</span>
+                  <strong>{count}</strong>
+                </article>
+              );
+            })}
+          </div>
+
+          <div className="lead-list">
+            {leads.map((lead) => (
+              <article key={lead.id} className="list-card list-card--lead">
+                <div>
+                  <span>{sourceLabels[lead.source]}</span>
+                  <h3>{lead.customerName}</h3>
+                </div>
+                <p>
+                  {stageLabels[lead.stage]} · {formatRelative(lead.updatedAt)}
+                </p>
+                <small>Criado em {formatDateTime(lead.createdAt)}</small>
+              </article>
+            ))}
+          </div>
+        </aside>
+
+        <section className="panel panel--stacked inbox-panel">
+          <div className="section-head section-head--compact">
+            <div>
+              <p className="card-label">Inbox do atendimento</p>
+              <h2>Conversas e historico</h2>
+            </div>
+          </div>
+
+          <div className="conversation-layout">
+            <div className="conversation-list">
+              {conversations.map((conversation) => {
+                const active = conversation.id === selectedConversationId;
+                return (
+                  <button
+                    key={conversation.id}
+                    type="button"
+                    className={`list-card conversation-card ${active ? "conversation-card--active" : ""}`}
+                    onClick={() => void selectConversation(conversation.id)}
+                  >
+                    <div>
+                      <span>{conversationStatusLabels[conversation.status]}</span>
+                      <h3>{conversation.customerName}</h3>
+                    </div>
+                    <p>{conversation.lastMessagePreview ?? "Sem mensagens ainda"}</p>
+                    <small>{formatRelative(conversation.lastMessageAt ?? conversation.updatedAt)}</small>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="conversation-detail">
+              {conversationDetail ? (
+                <>
+                  <div className="conversation-hero">
+                    <div>
+                      <p className="card-label">{conversationStatusLabels[conversationDetail.status]}</p>
+                      <h3>{conversationDetail.customerName}</h3>
+                      <p>{conversationDetail.customerProfile.email ?? "Sem email cadastrado"}</p>
+                    </div>
+                    <div className="conversation-meta">
+                      <span>{conversationDetail.lead ? stageLabels[conversationDetail.lead.stage] : "Lead vinculado"}</span>
+                      <strong>{formatRelative(conversationDetail.lastMessageAt)}</strong>
+                    </div>
+                  </div>
+
+                  <div className="message-thread">
+                    {conversationDetail.messages.map((message) => (
+                      <article key={message.id} className={`message-bubble message-bubble--${message.authorType}`}>
+                        <span>{authorLabels[message.authorType]}</span>
+                        <p>{message.body}</p>
+                        <small>{formatDateTime(message.createdAt)}</small>
+                      </article>
+                    ))}
+                  </div>
+
+                  <form className="message-form" onSubmit={handleSendMessage}>
+                    <label className="field">
+                      <span>Responder na conversa</span>
+                      <textarea
+                        value={conversationBody}
+                        onChange={(event) => setConversationBody(event.target.value)}
+                        placeholder="Escreva a resposta operacional aqui"
+                        rows={4}
+                      />
+                    </label>
+
+                    <button className="button button--primary" type="submit" disabled={submitting || !conversationBody.trim()}>
+                      {submitting ? "Enviando..." : "Enviar mensagem"}
+                    </button>
+                  </form>
+                </>
+              ) : (
+                <div className="empty-state">
+                  <h3>Selecione uma conversa</h3>
+                  <p>O historico e o compositor de mensagem aparecem aqui quando uma conversa e aberta.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+  );
+}
+
+export default App;
+
+
+
+
+
+
+
+
+
+
+
