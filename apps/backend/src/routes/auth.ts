@@ -1,4 +1,4 @@
-﻿import { z } from "zod";
+import { z } from "zod";
 import type { FastifyInstance } from "fastify";
 import { ApiError, requireSession } from "../lib/http.js";
 import { createSessionToken } from "../lib/session.js";
@@ -79,7 +79,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     const { email, password, tenantSlug } = loginSchema.parse(request.body);
     const user = findUserByEmail(email);
 
-    if (!user || !verifyPassword(password, user.email)) {
+    if (!user || !verifyPassword(user.email, password)) {
       throw new ApiError(401, "INVALID_CREDENTIALS", "Credenciais invalidas");
     }
 
@@ -104,3 +104,4 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     return buildSessionResponse(session.sub, tenant.id);
   });
 }
+

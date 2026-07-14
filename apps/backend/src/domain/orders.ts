@@ -1,4 +1,4 @@
-﻿import crypto from "node:crypto";
+import crypto from "node:crypto";
 import type {
   ApproveQuoteResponse,
   CreateQuoteItemRequest,
@@ -21,7 +21,13 @@ import type {
 } from "@print-flow/contracts";
 import { previewCatalogPrice } from "./catalog.js";
 import { listBillingEventsForOrder } from "./billing-ledger.js";
+import {
+  consumeReservedStockForOrder,
+  releaseReservedStockForOrder,
+  reserveStockForOrder,
+} from "./stock.js";
 import { findCustomerProfileById } from "./store.js";
+import { recordOrderCreatedNotification, recordPaymentConfirmedNotification, recordPaymentLinkNotification } from "./notifications.js";
 
 function now() {
   return new Date().toISOString();
@@ -213,7 +219,7 @@ const seededApprovedQuote = buildQuoteRecord(
     items: [
       { productId: "tenant_alfa_print_flyer-a5", variantId: "tenant_alfa_print_flyer-a5_double-sided", quantity: 2000 },
     ],
-    notes: "Aguardando aprovacão do cliente para iniciar faturamento.",
+    notes: "Aguardando aprovacÃƒÆ’Ã‚Â£o do cliente para iniciar faturamento.",
   },
   minutesAgo(126),
   "approved",
@@ -249,8 +255,29 @@ const novaDraftQuote = buildQuoteRecord(
   "sent",
 );
 
+const seededProductionOrder: Order = {
+  id: "order_seed_lucia_production",
+  tenantId: "tenant_nova_graph",
+  customerProfileId: novaDraftQuote.customerProfileId,
+  customerName: novaDraftQuote.customerName,
+  items: novaDraftQuote.items.map((item) => cloneOrderItem("tenant_nova_graph", item)),
+  total: novaDraftQuote.total,
+  status: "in_production",
+  paymentStatus: "paid",
+  paymentUrl: "https://payments.printflow.local/mock/order_seed_lucia_production",
+  billingProvider: "mock",
+  billingInvoiceId: "invoice_seed_lucia_production",
+  billingChargeId: "charge_seed_lucia_production",
+  createdAt: minutesAgo(140),
+  updatedAt: minutesAgo(32),
+};
+
 export const quotes: Quote[] = [seededDraftQuote, seededApprovedQuote, novaDraftQuote];
-export const orders: Order[] = [seededOrder];
+export const orders: Order[] = [seededOrder, seededProductionOrder];
+
+reserveStockForOrder("tenant_alfa_print", seededOrder.id, seededOrder.items, "Reserva inicial do pedido seed");
+reserveStockForOrder("tenant_nova_graph", seededProductionOrder.id, seededProductionOrder.items, "Reserva inicial do pedido seed");
+consumeReservedStockForOrder("tenant_nova_graph", seededProductionOrder.id, "Baixa inicial do pedido em producao");
 
 function findQuoteById(quoteId: string) {
   return quotes.find((quote) => quote.id === quoteId) ?? null;
@@ -321,9 +348,6 @@ export function approveQuote(tenantId: string, quoteId: string): ApproveQuoteRes
   }
 
   const timestamp = now();
-  quote.status = "approved";
-  quote.updatedAt = timestamp;
-
   const order: Order = {
     id: createId("order"),
     tenantId,
@@ -338,8 +362,18 @@ export function approveQuote(tenantId: string, quoteId: string): ApproveQuoteRes
     updatedAt: timestamp,
   };
 
+  reserveStockForOrder(tenantId, order.id, order.items, "Reserva criada na aprovacao do orcamento");
+
+  quote.status = "approved";
+  quote.updatedAt = timestamp;
   quote.orderId = order.id;
   orders.unshift(order);
+  recordOrderCreatedNotification({
+    tenantId,
+    orderId: order.id,
+    quoteId: quote.id,
+    customerName: order.customerName,
+  });
 
   return {
     quote: buildQuoteDetail(quote),
@@ -358,7 +392,11 @@ export function updateOrderStatus(
     return null;
   }
 
+  const previousStatus = order.status;
   order.status = payload.status;
+  if (payload.status === "canceled" && previousStatus !== "canceled") {
+    releaseReservedStockForOrder(tenantId, orderId, "Reserva liberada apÃ³s cancelamento do pedido");
+  }
   if (payload.paymentStatus) {
     order.paymentStatus = payload.paymentStatus;
   }
@@ -389,6 +427,13 @@ export function applyPaymentLinkToOrder(
   order.billingChargeId = billing.chargeId;
   order.updatedAt = now();
 
+  recordPaymentLinkNotification({
+    tenantId,
+    orderId,
+    paymentUrl: billing.paymentUrl,
+    customerName: order.customerName,
+  });
+
   return buildOrderDetail(order);
 }
 
@@ -418,6 +463,14 @@ export function applyPaymentConfirmationToOrder(
   }
 
   order.updatedAt = now();
+
+  if (payload.paymentStatus === "paid") {
+    recordPaymentConfirmedNotification({
+      tenantId,
+      orderId,
+      customerName: order.customerName,
+    });
+  }
 
   return buildOrderDetail(order);
 }
@@ -455,3 +508,4 @@ export function getOrdersOverview(tenantId: string): OrdersOverview {
     totalOrderValue: sumTotals(tenantOrders),
   };
 }
+

@@ -1,4 +1,4 @@
-﻿import fastify from "fastify";
+import fastify from "fastify";
 import cors from "@fastify/cors";
 import { ApiError } from "./lib/http.js";
 import { registerAuthRoutes } from "./routes/auth.js";
@@ -7,7 +7,9 @@ import { registerCatalogRoutes } from "./routes/catalog.js";
 import { registerCrmRoutes } from "./routes/crm.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerMetaRoutes } from "./routes/meta.js";
+import { registerNotificationRoutes } from "./routes/notifications.js";
 import { registerOrderRoutes } from "./routes/orders.js";
+import { registerProductionRoutes } from "./routes/production.js";
 import { registerTenantRoutes } from "./routes/tenants.js";
 
 export async function buildApp() {
@@ -40,13 +42,13 @@ export async function buildApp() {
   await app.register(registerCrmRoutes);
   await app.register(registerCatalogRoutes);
   await app.register(registerOrderRoutes);
+  await app.register(registerProductionRoutes);
+  await app.register(registerNotificationRoutes);
 
   app.get("/api/v1", async () => ({
     name: "print-flow-saas-backend",
-    modules: ["health", "meta", "auth", "tenants", "billing", "crm", "catalog", "orders"],
+    modules: ["health", "meta", "auth", "tenants", "billing", "crm", "catalog", "orders", "production", "stock", "notifications", "automation"],
   }));
 
   return app;
 }
-
-

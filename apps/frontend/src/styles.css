@@ -919,3 +919,245 @@ textarea {
   }
 }
 
+.production-panel {
+  margin-top: 18px;
+}
+
+.production-stage-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.production-stage-card,
+.production-step {
+  padding: 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(54, 38, 22, 0.08);
+}
+
+.production-stage-card strong,
+.production-step strong {
+  display: block;
+  font-size: 1.15rem;
+  margin-bottom: 6px;
+}
+
+.production-stage-card p,
+.production-step p {
+  margin-bottom: 0;
+  color: var(--muted);
+}
+
+.production-layout {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.38fr) minmax(0, 0.62fr);
+  gap: 14px;
+}
+
+.production-column {
+  display: grid;
+  gap: 14px;
+}
+
+.production-record {
+  width: 100%;
+  text-align: left;
+}
+
+.production-record small {
+  color: var(--muted);
+}
+
+.production-matrix {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.production-step--active {
+  border-color: rgba(15, 108, 92, 0.34);
+  box-shadow: 0 20px 40px rgba(15, 108, 92, 0.08);
+}
+
+.production-detail-card {
+  display: grid;
+  gap: 14px;
+}
+
+.production-hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 18px;
+  border-radius: 22px;
+  background: linear-gradient(145deg, rgba(15, 108, 92, 0.08), rgba(160, 106, 51, 0.08));
+  border: 1px solid rgba(15, 108, 92, 0.08);
+}
+
+.production-meta {
+  text-align: right;
+}
+
+.production-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.production-notes,
+.production-activity {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(54, 38, 22, 0.08);
+}
+
+@media (max-width: 1120px) {
+  .production-stage-grid,
+  .production-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .production-hero,
+  .production-controls {
+    flex-direction: column;
+  }
+
+  .production-meta {
+    text-align: left;
+  }
+
+  .production-controls,
+  .production-matrix {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+}
+
+.stock-panel {
+  margin-top: 18px;
+}
+
+.stock-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.42fr) minmax(0, 0.58fr);
+  gap: 14px;
+}
+
+.stock-column {
+  display: grid;
+  gap: 14px;
+}
+
+.stock-form {
+  align-content: start;
+}
+
+.stock-warning {
+  color: #8c1e1e;
+}
+
+.timeline-item--stock {
+  border-left: 4px solid var(--primary);
+}
+
+@media (max-width: 1120px) {
+  .stock-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .stock-layout {
+    grid-template-columns: 1fr;
+  }
+}
+.notifications-panel {
+  margin-top: 18px;
+}
+
+.notifications-layout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.notifications-column {
+  display: grid;
+  gap: 14px;
+}
+
+.notification-item p {
+  margin-bottom: 0;
+}
+
+.notification-item--read {
+  opacity: 0.72;
+}
+
+.notification-item--queued {
+  border-left: 4px solid var(--accent);
+}
+
+.notification-item--sent {
+  border-left: 4px solid var(--primary);
+}
+
+.notification-item--failed {
+  border-left: 4px solid #8c1e1e;
+  background: rgba(170, 45, 45, 0.08);
+}
+
+.notification-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--muted);
+}
+
+.notification-read-button {
+  justify-self: start;
+}
+
+.automation-rule-item {
+  border-left: 4px solid var(--accent);
+}
+
+.remarketing-item {
+  border-left: 4px solid var(--primary);
+}
+
+.remarketing-priority--high {
+  border-color: rgba(140, 30, 30, 0.24);
+  background: rgba(170, 45, 45, 0.08);
+}
+
+.remarketing-priority--medium {
+  border-color: rgba(160, 106, 51, 0.24);
+  background: rgba(160, 106, 51, 0.08);
+}
+
+.remarketing-priority--low {
+  border-color: rgba(15, 108, 92, 0.24);
+  background: rgba(15, 108, 92, 0.06);
+}
+
+@media (max-width: 1120px) {
+  .notifications-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .notification-meta {
+    flex-direction: column;
+  }
+}
